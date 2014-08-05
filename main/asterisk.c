@@ -1015,14 +1015,22 @@ static void *listener(void *unused)
 			continue;
 		}
 		len = sizeof(sunaddr);
+#ifdef	HAVE_CLOEXEC
+		s = accept4(ast_socket, (struct sockaddr *)&sunaddr, &len, SOCK_CLOEXEC);
+#else
 		s = accept(ast_socket, (struct sockaddr *)&sunaddr, &len);
+#endif
 		if (s < 0) {
 			if (errno != EINTR)
 				ast_log(LOG_WARNING, "Accept returned %d: %s\n", s, strerror(errno));
 		} else {
 			for (x = 0; x < AST_MAX_CONNECTS; x++) {
 				if (consoles[x].fd < 0) {
+#ifdef	HAVE_CLOEXEC
+					if (socketpair(AF_LOCAL, SOCK_STREAM|SOCK_CLOEXEC, 0, consoles[x].p)) {
+#else
 					if (socketpair(AF_LOCAL, SOCK_STREAM, 0, consoles[x].p)) {
+#endif
 						ast_log(LOG_ERROR, "Unable to create pipe: %s\n", strerror(errno));
 						consoles[x].fd = -1;
 						fdprint(s, "Server failed to create pipe\n");
@@ -1068,7 +1076,11 @@ static int ast_makesocket(void)
 	for (x = 0; x < AST_MAX_CONNECTS; x++)	
 		consoles[x].fd = -1;
 	unlink(ast_config_AST_SOCKET);
+#ifdef	HAVE_CLOEXEC
+	ast_socket = socket(PF_LOCAL, SOCK_STREAM|SOCK_CLOEXEC, 0);
+#else
 	ast_socket = socket(PF_LOCAL, SOCK_STREAM, 0);
+#endif
 	if (ast_socket < 0) {
 		ast_log(LOG_WARNING, "Unable to create control socket: %s\n", strerror(errno));
 		return -1;
@@ -1130,7 +1142,11 @@ static int ast_tryconnect(void)
 {
 	struct sockaddr_un sunaddr;
 	int res;
+#ifdef	HAVE_CLOEXEC
+	ast_consock = socket(PF_LOCAL, SOCK_STREAM|SOCK_CLOEXEC, 0);
+#else
 	ast_consock = socket(PF_LOCAL, SOCK_STREAM, 0);
+#endif
 	if (ast_consock < 0) {
 		ast_log(LOG_WARNING, "Unable to create socket: %s\n", strerror(errno));
 		return 0;
@@ -3188,7 +3204,11 @@ int main(int argc, char *argv[])
 	if (ast_opt_no_fork)
 		consolethread = pthread_self();
 
+#ifdef	HAVE_CLOEXEC
+	if (pipe2(sig_alert_pipe, O_CLOEXEC))
+#else
 	if (pipe(sig_alert_pipe))
+#endif
 		sig_alert_pipe[0] = sig_alert_pipe[1] = -1;
 
 	ast_set_flag(&ast_options, AST_OPT_FLAG_FULLY_BOOTED);

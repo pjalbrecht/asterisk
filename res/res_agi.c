@@ -34,6 +34,9 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: 237405 $")
 #include <sys/types.h>
 #include <netdb.h>
 #include <sys/socket.h>
+#ifdef	HAVE_CLOEXEC
+#include <sys/un.h>
+#endif
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -193,7 +196,11 @@ static enum agi_result launch_netscript(char *agiurl, char *argv[], int *fds, in
 		ast_log(LOG_WARNING, "Unable to locate host '%s'\n", host);
 		return -1;
 	}
+#ifdef	HAVE_CLOEXEC
+	s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+#else
 	s = socket(AF_INET, SOCK_STREAM, 0);
+#endif
 	if (s < 0) {
 		ast_log(LOG_WARNING, "Unable to create socket: %s\n", strerror(errno));
 		return -1;
@@ -252,15 +259,17 @@ static enum agi_result launch_netscript(char *agiurl, char *argv[], int *fds, in
 	*opid = -1;
 	return AGI_RESULT_SUCCESS_FAST;
 }
-
+#ifdef	HAVE_CLOEXEC
+static enum agi_result launch_script(struct ast_channel *chan, char *script, char *argv[], int *fds, int *efd, int *opid)
+#else
 static enum agi_result launch_script(char *script, char *argv[], int *fds, int *efd, int *opid)
+#endif
 {
 	char tmp[256];
 	int pid;
 	int toast[2];
 	int fromast[2];
 	int audio[2];
-	int x;
 	int res;
 	sigset_t signal_set, old_set;
 	
@@ -271,6 +280,25 @@ static enum agi_result launch_script(char *script, char *argv[], int *fds, int *
 		snprintf(tmp, sizeof(tmp), "%s/%s", (char *)ast_config_AST_AGI_DIR, script);
 		script = tmp;
 	}
+#ifdef	HAVE_CLOEXEC
+	//
+	// create and bind unix socket for file descriptors
+	//
+	int ast_sock;
+	if ((ast_sock = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0)) < 0) {
+		ast_log(LOG_ERROR, "unable to create ast socket: %s\n", strerror(errno));
+		return AGI_RESULT_FAILURE;
+	}
+
+	struct sockaddr_un ast_address;
+	ast_address.sun_family = AF_UNIX;
+	sprintf(ast_address.sun_path, "/tmp/asterisk-%s",chan->uniqueid);
+
+	if(bind(ast_sock, (const struct sockaddr *) &ast_address, sizeof(struct sockaddr_un)) != 0) {
+		ast_log(LOG_ERROR, "ast_sock bind failed, %s\n", strerror(errno));
+		return AGI_RESULT_FAILURE;
+	}
+#else
 	if (pipe(toast)) {
 		ast_log(LOG_WARNING, "Unable to create toast pipe: %s\n",strerror(errno));
 		return AGI_RESULT_FAILURE;
@@ -304,7 +332,7 @@ static enum agi_result launch_script(char *script, char *argv[], int *fds, int *
 			return AGI_RESULT_FAILURE;
 		}
 	}
-
+#endif
 	/* Block SIGHUP during the fork - prevents a race */
 	sigfillset(&signal_set);
 	pthread_sigmask(SIG_BLOCK, &signal_set, &old_set);
@@ -340,7 +368,108 @@ static enum agi_result launch_script(char *script, char *argv[], int *fds, int *
 
 		/* Don't run AGI scripts with realtime priority -- it causes audio stutter */
 		ast_set_priority(0);
+#ifdef	HAVE_CLOEXEC
+		//
+		// create and connect unix socket for file descriptors
+		//
+		int agi_sock;
+		if ((agi_sock = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
+			ast_log(LOG_ERROR, "unable to create agi socket: %s\n", strerror(errno));
+			_exit(1);
+		}
 
+		if(connect(agi_sock, (const struct sockaddr *) &ast_address, sizeof(struct sockaddr_un)) != 0) {
+			ast_log(LOG_ERROR, "agi_sock unable to connect agi sock: %s\n", strerror(errno));
+			_exit(1);
+		}
+
+		//
+		// send toast/fromast file descriptors to asterisk
+		//
+		int agi_fds[2];
+
+		if (!pipe(toast)) {
+			agi_fds[0] = toast[0];
+		} else {
+			_exit(1);
+		}
+
+		if (!pipe(fromast)) {
+			agi_fds[1] = fromast[1];
+		} else {
+			ast_log(LOG_ERROR, "unable to create fromast pipe: %s\n", strerror(errno));
+			_exit(1);
+		}
+
+		char agi_buf[CMSG_SPACE(2 * sizeof(int))] = { 0, };
+
+		struct msghdr agi_message = { .msg_control = agi_buf, .msg_controllen = sizeof agi_buf };
+
+		struct cmsghdr *agi_cmsg = CMSG_FIRSTHDR(&agi_message);
+		agi_cmsg->cmsg_level = SOL_SOCKET;
+		agi_cmsg->cmsg_type = SCM_RIGHTS;
+		agi_cmsg->cmsg_len = CMSG_LEN(2 * sizeof(int));
+
+		int *agi_cmsg_fds_ptr = (int *)CMSG_DATA(agi_cmsg);
+		memcpy(agi_cmsg_fds_ptr, agi_fds, 2 * sizeof(int));
+
+		if (sendmsg(agi_sock, &agi_message, 0) < 0) {
+			ast_log(LOG_ERROR, "agi fds sendmsg failed: %s\n", strerror(errno));
+			_exit(1);
+		}
+
+		/* Redirect stdin and out, provide enhanced audio channel if desired */
+		dup2(fromast[0], STDIN_FILENO);
+		dup2(toast[1], STDOUT_FILENO);
+
+		close(fromast[0]);
+		close(fromast[1]);
+
+		close(toast[0]);
+		close(toast[1]);
+
+		if (efd) {
+			//
+			// send extended agi file descriptor to asterisk
+			//
+			if (pipe(audio)) {
+				ast_log(LOG_WARNING, "unable to create audio pipe: %s\n", strerror(errno));
+				_exit(1);
+			}
+			res = fcntl(audio[1], F_GETFL);
+			if (res > -1) 
+				res = fcntl(audio[1], F_SETFL, res | O_NONBLOCK);
+			if (res < 0) {
+				ast_log(LOG_WARNING, "unable to set audio pipe parameters: %s\n", strerror(errno));
+				_exit(1);
+			}
+
+			char agi_buf[CMSG_SPACE(1 * sizeof(int))] = { 0, };
+
+			struct msghdr agi_message = { .msg_control = agi_buf, .msg_controllen = sizeof agi_buf };
+
+			struct cmsghdr *agi_cmsg = CMSG_FIRSTHDR(&agi_message);
+			agi_cmsg->cmsg_level = SOL_SOCKET;
+			agi_cmsg->cmsg_type = SCM_RIGHTS;
+			agi_cmsg->cmsg_len = CMSG_LEN(1 * sizeof(int));
+
+			int *agi_cmsg_fds_ptr = (int *)CMSG_DATA(agi_cmsg);
+			memcpy(agi_cmsg_fds_ptr, &audio[1], 1 * sizeof(int));
+
+			if (sendmsg(agi_sock, &agi_message, 0) < 0) {
+				ast_log(LOG_ERROR, "agi fds sendmsg failed: %s\n", strerror(errno));
+				_exit(1);
+			}
+
+			dup2(audio[0], STDERR_FILENO + 1);
+
+			close(audio[0]);
+			close(audio[1]);
+
+		}
+
+		close(agi_sock);
+#else
 		/* Redirect stdin and out, provide enhanced audio channel if desired */
 		dup2(fromast[0], STDIN_FILENO);
 		dup2(toast[1], STDOUT_FILENO);
@@ -350,6 +479,11 @@ static enum agi_result launch_script(char *script, char *argv[], int *fds, int *
 			close(STDERR_FILENO + 1);
 		}
 
+		/* Close everything but stdin/out/error */
+		int x;
+		for (x=STDERR_FILENO + 2;x<1024;x++) 
+			close(x);
+#endif
 		/* Before we unblock our signals, return our trapped signals back to the defaults */
 		signal(SIGHUP, SIG_DFL);
 		signal(SIGCHLD, SIG_DFL);
@@ -365,10 +499,6 @@ static enum agi_result launch_script(char *script, char *argv[], int *fds, int *
 			_exit(1);
 		}
 
-		/* Close everything but stdin/out/error */
-		for (x=STDERR_FILENO + 2;x<1024;x++) 
-			close(x);
-
 		/* Execute script */
 		execv(script, argv);
 		/* Can't use ast_log since FD's are closed */
@@ -381,6 +511,49 @@ static enum agi_result launch_script(char *script, char *argv[], int *fds, int *
 	pthread_sigmask(SIG_SETMASK, &old_set, NULL);
 	if (option_verbose > 2) 
 		ast_verbose(VERBOSE_PREFIX_3 "Launched AGI Script %s\n", script);
+#ifdef	HAVE_CLOEXEC
+	//
+	// receive toast/fromast file descriptors from agi process
+	//
+
+	char ast_buf[CMSG_SPACE(2 * sizeof(int))] = { 0, };
+
+	struct msghdr ast_message = { .msg_control = ast_buf, .msg_controllen = sizeof ast_buf };
+
+	if (recvmsg(ast_sock, &ast_message, MSG_CMSG_CLOEXEC) < 0) {
+		ast_log(LOG_ERROR, "ast fds recvmsg failed: %s\n", strerror(errno));
+		close(ast_sock);
+		unlink(ast_address.sun_path);
+		return AGI_RESULT_FAILURE;
+	}
+
+	struct cmsghdr *ast_cmsg = CMSG_FIRSTHDR(&ast_message);
+	memcpy(fds,CMSG_DATA(ast_cmsg),2 * sizeof(int));
+
+	if (efd) {
+		//
+		// receive extended agi file descriptor from agi process
+		//
+
+		char ast_buf[CMSG_SPACE(1 * sizeof(int))] = { 0, };
+
+		struct msghdr ast_message = { .msg_control = ast_buf, .msg_controllen = sizeof ast_buf };
+
+		if (recvmsg(ast_sock, &ast_message, MSG_CMSG_CLOEXEC) < 0) {
+			ast_log(LOG_ERROR, "ast fds recvmsg failed: %s\n", strerror(errno));
+			close(ast_sock);
+			unlink(ast_address.sun_path);
+			return AGI_RESULT_FAILURE;
+		}
+
+		struct cmsghdr *ast_cmsg = CMSG_FIRSTHDR(&ast_message);
+		memcpy(efd,CMSG_DATA(ast_cmsg),1 * sizeof(int));
+	}
+
+	close(ast_sock);
+
+	unlink(ast_address.sun_path);
+#else
 	fds[0] = toast[0];
 	fds[1] = fromast[1];
 	if (efd) {
@@ -392,7 +565,7 @@ static enum agi_result launch_script(char *script, char *argv[], int *fds, int *
 
 	if (efd)
 		close(audio[0]);
-
+#endif
 	*opid = pid;
 	return AGI_RESULT_SUCCESS;
 }
@@ -2143,7 +2316,11 @@ static int agi_exec_full(struct ast_channel *chan, void *data, int enhanced, int
 	}
 #endif
 	ast_replace_sigchld();
+#ifdef	HAVE_CLOEXEC
+	res = launch_script(chan, argv[0], argv, fds, enhanced ? &efd : NULL, &pid);
+#else
 	res = launch_script(argv[0], argv, fds, enhanced ? &efd : NULL, &pid);
+#endif
 	if (res == AGI_RESULT_SUCCESS || res == AGI_RESULT_SUCCESS_FAST) {
 		int status = 0;
 		agi.fd = fds[1];

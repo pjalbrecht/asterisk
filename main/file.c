@@ -457,6 +457,9 @@ static int ast_filehelper(const char *filename, const void *arg2, const char *fm
 			 */
 			if (action == ACTION_OPEN) {
 				struct ast_channel *chan = (struct ast_channel *)arg2;
+#ifdef	HAVE_CLOEXEC
+				int fd;
+#endif
 				FILE *bfile;
 				struct ast_filestream *s;
 
@@ -465,7 +468,18 @@ static int ast_filehelper(const char *filename, const void *arg2, const char *fm
 					free(fn);
 					continue;	/* not a supported format */
 				}
+#ifdef	HAVE_CLOEXEC
+				fd = open(fn, O_RDONLY|O_CLOEXEC);
+				if (fd > -1) {
+					if ( (bfile = fdopen(fd, "r")) == NULL) {
+						free(fn);
+						close(fd);
+						continue;       /* cannot open file */
+					}
+				} else {
+#else
 				if ( (bfile = fopen(fn, "r")) == NULL) {
+#endif
 					free(fn);
 					continue;	/* cannot open file */
 				}
@@ -1080,7 +1094,11 @@ struct ast_filestream *ast_writefile(const char *filename, const char *type, con
 			format_found = 1;
 
 		fn = build_filename(filename, type);
+#ifdef	HAVE_CLOEXEC
+		fd = open(fn, flags | myflags|O_CLOEXEC, mode);
+#else
 		fd = open(fn, flags | myflags, mode);
+#endif
 		if (fd > -1) {
 			/* fdopen() the resulting file stream */
 			bfile = fdopen(fd, ((flags | myflags) & O_RDWR) ? "w+" : "w");
@@ -1111,7 +1129,11 @@ struct ast_filestream *ast_writefile(const char *filename, const char *type, con
 			strcat(buf, fn);
 			free(fn);
 			fn = buf;
+#ifdef	HAVE_CLOEXEC
+			fd = open(fn, flags | myflags|O_CLOEXEC, mode);
+#else
 			fd = open(fn, flags | myflags, mode);
+#endif
 			if (fd > -1) {
 				/* fdopen() the resulting file stream */
 				bfile = fdopen(fd, ((flags | myflags) & O_RDWR) ? "w+" : "w");

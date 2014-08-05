@@ -2493,7 +2493,11 @@ static void *accept_thread(void *ignore)
 		   we can ditch any old manager sessions */
 		if (ast_poll(pfds, 1, 5000) < 1)
 			continue;
+#ifdef	HAVE_CLOEXEC
+		as = accept4(asock, (struct sockaddr *)&sin, &sinlen, SOCK_CLOEXEC);
+#else
 		as = accept(asock, (struct sockaddr *)&sin, &sinlen);
+#endif
 		if (as < 0) {
 			ast_log(LOG_NOTICE, "Accept returned -1: %s\n", strerror(errno));
 			continue;
@@ -3289,7 +3293,11 @@ int init_manager(void)
 		return 0;
 
 	if (asock < 0) {
+#ifdef	HAVE_CLOEXEC
+		asock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+#else
 		asock = socket(AF_INET, SOCK_STREAM, 0);
+#endif
 		if (asock < 0) {
 			ast_log(LOG_WARNING, "Unable to create socket: %s\n", strerror(errno));
 			return -1;

@@ -758,7 +758,11 @@ struct ast_channel *ast_channel_alloc(int needqueue, int state, const char *cid_
 #endif					
 
 	if (needqueue) {
+#ifdef	HAVE_CLOEXEC
+		if (pipe2(tmp->alertpipe,O_CLOEXEC)) {
+#else
 		if (pipe(tmp->alertpipe)) {
+#endif
 			ast_log(LOG_WARNING, "Channel allocation failed: Can't create alert pipe! Try increasing max file descriptors with ulimit -n\n");
 alertpipe_failed:
 #ifdef HAVE_DAHDI

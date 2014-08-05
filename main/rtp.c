@@ -1905,7 +1905,11 @@ static int rtp_socket(void)
 {
 	int s;
 	long flags;
+#ifdef	HAVE_CLOEXEC
+	s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+#else
 	s = socket(AF_INET, SOCK_DGRAM, 0);
+#endif
 	if (s > -1) {
 		flags = fcntl(s, F_GETFL);
 		fcntl(s, F_SETFL, flags | O_NONBLOCK);

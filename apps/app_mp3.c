@@ -43,6 +43,11 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: 238009 $")
 #ifdef HAVE_CAP
 #include <sys/capability.h>
 #endif /* HAVE_CAP */
+#ifdef	HAVE_CLOEXEC
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <errno.h>
+#endif
 
 #include "asterisk/lock.h"
 #include "asterisk/file.h"
@@ -67,10 +72,13 @@ static char *descrip =
 "any key on the dialpad, or by hanging up."; 
 
 
+#ifdef	HAVE_CLOEXEC
+static int mp3play(char *filename, struct sockaddr_un ast_address)
+#else
 static int mp3play(char *filename, int fd)
+#endif
 {
 	int res;
-	int x;
 	sigset_t fullset, oldset;
 #ifdef HAVE_CAP
 	cap_t cap;
@@ -100,10 +108,64 @@ static int mp3play(char *filename, int fd)
 	signal(SIGPIPE, SIG_DFL);
 	pthread_sigmask(SIG_UNBLOCK, &fullset, NULL);
 
+#ifdef	HAVE_CLOEXEC
+	//
+	// create and connect unix socket file descriptors
+	//
+	int mp3_sock;
+	if ((mp3_sock = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
+		ast_log(LOG_ERROR, "unable to create mp3 socket: %s\n", strerror(errno));
+		_exit(1);
+	}
+
+	if(connect(mp3_sock, (const struct sockaddr *) &ast_address, sizeof(struct sockaddr_un)) != 0) {
+		ast_log(LOG_ERROR, "unable to connect mp3 socket: %s\n", strerror(errno));
+		_exit(1);
+	}
+
+	//
+	// create pipe for mp3 program
+	//
+	int mp3_fds[2];
+	if (pipe(mp3_fds)) {
+		ast_log(LOG_ERROR, "unable to create mp3 pipe: %s\n", strerror(errno));
+		_exit(1);
+	}
+
+	//
+	// send mp3 file descriptor to asterisk
+	//
+
+	char mp3_buf[CMSG_SPACE(1 * sizeof(int))] = { 0, };
+
+	struct msghdr mp3_message = { .msg_control = mp3_buf, .msg_controllen = sizeof mp3_buf };
+
+	struct cmsghdr *mp3_cmsg = CMSG_FIRSTHDR(&mp3_message);
+	mp3_cmsg->cmsg_level = SOL_SOCKET;
+	mp3_cmsg->cmsg_type = SCM_RIGHTS;
+	mp3_cmsg->cmsg_len = CMSG_LEN(1 * sizeof(int));
+
+	int *mp3_cmsg_fds_ptr = (int *)CMSG_DATA(mp3_cmsg);
+	memcpy(mp3_cmsg_fds_ptr, &mp3_fds[0], 1 * sizeof(int));
+
+	if (sendmsg(mp3_sock, &mp3_message, 0) < 0) {
+		ast_log(LOG_ERROR, "mp3 fds sendmsg failed: %s\n", strerror(errno));
+		_exit(1);
+	}
+
+	close(mp3_sock);
+
+	dup2(mp3_fds[1], STDOUT_FILENO);
+
+	close(mp3_fds[0]);
+	close(mp3_fds[1]);
+#else
 	dup2(fd, STDOUT_FILENO);
+	int x;
 	for (x=STDERR_FILENO + 1;x<256;x++) {
 		close(x);
 	}
+#endif
 	/* Execute mpg123, but buffer if it's a net connection */
 	if (!strncasecmp(filename, "http://", 7)) {
 		/* Most commonly installed in /usr/local/bin */
@@ -165,12 +227,6 @@ static int mp3_exec(struct ast_channel *chan, void *data)
 	}
 
 	u = ast_module_user_add(chan);
-
-	if (pipe(fds)) {
-		ast_log(LOG_WARNING, "Unable to create pipe\n");
-		ast_module_user_remove(u);
-		return -1;
-	}
 	
 	ast_stopstream(chan);
 
@@ -181,8 +237,75 @@ static int mp3_exec(struct ast_channel *chan, void *data)
 		ast_module_user_remove(u);
 		return -1;
 	}
+
+#ifdef	HAVE_CLOEXEC
+	//
+	// create and bind unix socket for file descriptors
+	//
+	int ast_sock;
+	if ((ast_sock = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0)) < 0) {
+		ast_log(LOG_ERROR, "unable to create ast socket: %s\n", strerror(errno));
+		ast_set_write_format(chan, owriteformat);
+		ast_module_user_remove(u);
+		return -1;
+	}
+
+	struct sockaddr_un ast_address;
+	ast_address.sun_family = AF_UNIX;
+	sprintf(ast_address.sun_path, "/tmp/asterisk-%s",chan->uniqueid);
+
+	if(bind(ast_sock, (const struct sockaddr *) &ast_address, sizeof(struct sockaddr_un)) != 0) {
+		ast_log(LOG_ERROR, "ast_sock bind failed, %s\n", strerror(errno));
+		ast_set_write_format(chan, owriteformat);
+		close(ast_sock);
+		ast_module_user_remove(u);
+		return -1;
+	}
+
+	//
+	// create the process for media playback
+	//
+	if (((res = mp3play((char *)data, ast_address)) < 0)) {
+		ast_log(LOG_WARNING, "Unable to fork child process\n");
+		ast_set_write_format(chan, owriteformat);
+		close(ast_sock);
+		ast_module_user_remove(u);
+		return -1;
+	}
+
+	//
+	// receive file descriptors from mp3 process
+	//
+
+	char ast_buf[CMSG_SPACE(1 * sizeof(int))] = { 0, };
+
+	struct msghdr ast_message = { .msg_control = ast_buf, .msg_controllen = sizeof ast_buf };
+
+	if (recvmsg(ast_sock, &ast_message, MSG_CMSG_CLOEXEC) < 0) {
+		ast_log(LOG_ERROR, "ast fds recvmsg failed: %s\n", strerror(errno));
+		ast_set_write_format(chan, owriteformat);
+		close(ast_sock);
+		ast_module_user_remove(u);
+		return -1;
+	}
+
+	struct cmsghdr *ast_cmsg = CMSG_FIRSTHDR(&ast_message);
+	memcpy(fds,CMSG_DATA(ast_cmsg),1 * sizeof(int));
+
+	close(ast_sock);
+
+	unlink(ast_address.sun_path);
+#else
+	if (pipe(fds)) {
+		ast_log(LOG_WARNING, "Unable to create pipe\n");
+		ast_module_user_remove(u);
+		return -1;
+	}
 	
 	res = mp3play((char *)data, fds[1]);
+	close(fds[1]);
+#endif
+
 	if (!strncasecmp((char *)data, "http://", 7)) {
 		timeout = 10000;
 	}
@@ -244,7 +367,6 @@ static int mp3_exec(struct ast_channel *chan, void *data)
 		}
 	}
 	close(fds[0]);
-	close(fds[1]);
 	
 	if (pid > -1)
 		kill(pid, SIGKILL);

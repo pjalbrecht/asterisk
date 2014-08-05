@@ -38,6 +38,9 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: 248582 $")
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/stat.h>
+#ifdef	HAVE_CLOEXEC
+#include <fcntl.h>
+#endif
 #if ((defined(AST_DEVMODE)) && (defined(linux)))
 #include <execinfo.h>
 #define MAX_BACKTRACE_FRAMES 20
@@ -264,7 +267,12 @@ static struct logchannel *make_logchannel(char *channel, char *components, int l
 			snprintf(chan->filename, sizeof(chan->filename), "%s/%s",
 				 channel[0] != '/' ? ast_config_AST_LOG_DIR : "", channel);
 		}
+#ifdef	HAVE_CLOEXEC
+		int fd = open((char *)(chan->filename), O_CREAT | O_APPEND | O_WRONLY | O_CLOEXEC, 0644);
+		chan->fileptr = fdopen(fd, "a");
+#else
 		chan->fileptr = fopen(chan->filename, "a");
+#endif
 		if (!chan->fileptr) {
 			/* Can't log here, since we're called with a lock */
 			fprintf(stderr, "Logger Warning: Unable to open log file '%s': %s\n", chan->filename, strerror(errno));
@@ -432,7 +440,12 @@ int reload_logger(int rotate)
 				ast_log(LOG_ERROR, "Unable to rename file '%s' to '%s'\n", old, new);
 		}
 
+#ifdef	HAVE_CLOEXEC
+		int efd = open((char *)old, O_CREAT | O_APPEND | O_WRONLY | O_CLOEXEC, 0644);
+		eventlog = fdopen(efd, "a"); 
+#else
 		eventlog = fopen(old, "a");
+#endif
 		if (eventlog) {
 			ast_log(LOG_EVENT, "Restarted Asterisk Event Logger\n");
 			if (option_verbose)
@@ -460,7 +473,12 @@ int reload_logger(int rotate)
 				ast_log(LOG_ERROR, "Unable to rename file '%s' to '%s'\n", old, new);
 		}
 
+#ifdef	HAVE_CLOEXEC
+		int qfd = open((char *)old, O_CREAT | O_APPEND | O_WRONLY | O_CLOEXEC, 0644);
+		qlog = fdopen(qfd, "a");
+#else
 		qlog = fopen(old, "a");
+#endif
 		if (qlog) {
 			ast_queue_log("NONE", "NONE", "NONE", "CONFIGRELOAD", "%s", "");
 			ast_log(LOG_EVENT, "Restarted Asterisk Queue Logger\n");
@@ -600,7 +618,12 @@ int init_logger(void)
 	if (logfiles.event_log) {
 		mkdir((char *)ast_config_AST_LOG_DIR, 0755);
 		snprintf(tmp, sizeof(tmp), "%s/%s", (char *)ast_config_AST_LOG_DIR, EVENTLOG);
+#ifdef	HAVE_CLOEXEC
+		int efd = open((char *)tmp, O_CREAT | O_APPEND | O_WRONLY | O_CLOEXEC, 0644);
+		eventlog = fdopen(efd, "a");
+#else
 		eventlog = fopen((char *)tmp, "a");
+#endif
 		if (eventlog) {
 			ast_log(LOG_EVENT, "Started Asterisk Event Logger\n");
 			if (option_verbose)
@@ -613,7 +636,12 @@ int init_logger(void)
 
 	if (logfiles.queue_log) {
 		snprintf(tmp, sizeof(tmp), "%s/%s", (char *)ast_config_AST_LOG_DIR, QUEUELOG);
+#ifdef	HAVE_CLOEXEC
+		int qfd = open((char *)tmp, O_CREAT | O_APPEND | O_WRONLY | O_CLOEXEC, 0644);
+		qlog = fdopen(qfd, "a");
+#else
 		qlog = fopen(tmp, "a");
+#endif
 		ast_queue_log("NONE", "NONE", "NONE", "QUEUESTART", "%s", "");
 	}
 	return res;

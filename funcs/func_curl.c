@@ -82,6 +82,13 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 	return realsize;
 }
 
+#ifdef	HAVE_CLOEXEC
+static int mySocketOpen(void *clientp, curlsocktype purpose,  struct curl_sockaddr *address)
+{
+	return socket(address->family, address->socktype | SOCK_CLOEXEC, address->protocol);
+}
+#endif
+
 static const char *global_useragent = "asterisk-libcurl-agent/1.0";
 
 static void curl_instance_cleanup(void *data)
@@ -110,6 +117,10 @@ static int curl_internal(struct MemoryStruct *chunk, char *url, char *post)
 		curl_easy_setopt(*curl, CURLOPT_TIMEOUT, 180);
 		curl_easy_setopt(*curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 		curl_easy_setopt(*curl, CURLOPT_USERAGENT, global_useragent);
+#ifdef	HAVE_CLOEXEC
+		curl_easy_setopt(*curl, CURLOPT_FORBID_REUSE, 1);
+		curl_easy_setopt(*curl, CURLOPT_OPENSOCKETFUNCTION, mySocketOpen);
+#endif
 	}
 
 	curl_easy_setopt(*curl, CURLOPT_URL, url);

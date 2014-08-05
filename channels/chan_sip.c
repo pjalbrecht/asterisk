@@ -18796,7 +18796,11 @@ static int reload_config(enum channelreloadreason reason)
 		sipsock = -1;
 	}
 	if (sipsock < 0) {
+#ifdef	HAVE_CLOEXEC
+		sipsock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+#else
 		sipsock = socket(AF_INET, SOCK_DGRAM, 0);
+#endif
 		if (sipsock < 0) {
 			ast_log(LOG_WARNING, "Unable to create SIP socket: %s\n", strerror(errno));
 			ast_config_destroy(cfg);
