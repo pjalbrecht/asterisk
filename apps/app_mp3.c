@@ -62,6 +62,9 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: 238009 $")
 #define LOCAL_MPG_123 "/usr/local/bin/mpg123"
 #define MPG_123 "/usr/bin/mpg123"
 
+#define LOCAL_MPLAYER "/usr/local/bin/mplayer"
+#define MPLAYER "/usr/bin/mplayer"
+
 static char *app = "MP3Player";
 
 static char *synopsis = "Play an MP3 file or stream";
@@ -94,6 +97,7 @@ static int mp3play(char *filename, int fd)
 		pthread_sigmask(SIG_SETMASK, &oldset, NULL);
 		return res;
 	}
+	setpgid(0, getpid());
 #ifdef HAVE_CAP
 	cap = cap_from_text("cap_net_admin-eip");
 
@@ -166,23 +170,64 @@ static int mp3play(char *filename, int fd)
 		close(x);
 	}
 #endif
+#ifdef	USE_MPG123
 	/* Execute mpg123, but buffer if it's a net connection */
 	if (!strncasecmp(filename, "http://", 7) || !strncasecmp(filename, "-@http://", 9)) {
-		/* Most commonly installed in /usr/local/bin */
-	    execl(LOCAL_MPG_123, "mpg123", "-q", "-s", "-b", "128", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
-		/* But many places has it in /usr/bin */
-	    execl(MPG_123, "mpg123", "-q", "-s", "-b", "128","-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
-		/* As a last-ditch effort, try to use PATH */
-	    execlp("mpg123", "mpg123", "-q", "-s", "-b", "128",  "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execl(MPG_123, "mpg123", "-q", "-s", "-b", "128","-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execl(LOCAL_MPG_123, "mpg123", "-q", "-s", "-b", "128", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execlp("mpg123", "mpg123", "-q", "-s", "-b", "128",  "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+	} else {
+		execl(MPG_123, "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execl(LOCAL_MPG_123, "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execlp("mpg123", "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
 	}
-	else {
-		/* Most commonly installed in /usr/local/bin */
-	    execl(MPG_123, "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
-		/* But many places has it in /usr/bin */
-	    execl(LOCAL_MPG_123, "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
-		/* As a last-ditch effort, try to use PATH */
-	    execlp("mpg123", "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+#elif	USE_MPLAYER
+	/* Execute mplayer, but buffer if it's a net connection */
+	if (!strncasecmp(filename, "http://", 7) ) {
+		execl(MPLAYER, "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+			"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", filename, (char *)NULL);
+		execl(LOCAL_MPLAYER, "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+			"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", filename, (char *)NULL);
+		execlp("mplayer", "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+			"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", filename, (char *)NULL);
 	}
+	else if (!strncasecmp(filename, "-@http://", 9)) {
+		execl(MPLAYER, "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+			"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", "-playlist", filename+2, (char *)NULL);
+		execl(LOCAL_MPLAYER, "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+			"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", "-playlist", filename+2, (char *)NULL);
+		execlp("mplayer", "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+			"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", "-playlist", filename+2, (char *)NULL);
+	} else {
+		if (!strncasecmp(filename, "-@",2)) {
+			execl(MPLAYER, "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+				"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", "-playlist", filename+2, (char *)NULL);
+			execl(LOCAL_MPLAYER, "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+				"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", "-playlist", filename+2, (char *)NULL);
+			execlp("mplayer", "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+				"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", "-playlist", filename+2, (char *)NULL);
+		}
+		else {
+			execl(MPLAYER, "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+				"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", filename, (char *)NULL);
+			execl(LOCAL_MPLAYER, "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+				"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", filename, (char *)NULL);
+			execlp("mplayer", "mplayer", "-really-quiet", "-quiet", "-vo", "null", "-vc", "null", "-ao", "pcm:fast", "-af",
+				"resample=8000,channels=1,format=mulaw", "-ao",  "pcm:file=/dev/stdout", filename, (char *)NULL);
+		}
+	}
+#else
+	/* Execute mpg123, but buffer if it's a net connection */
+	if (!strncasecmp(filename, "http://", 7) || !strncasecmp(filename, "-@http://", 9)) {
+		execl(MPG_123, "mpg123", "-q", "-s", "-b", "128","-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execl(LOCAL_MPG_123, "mpg123", "-q", "-s", "-b", "128", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execlp("mpg123", "mpg123", "-q", "-s", "-b", "128",  "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+	} else {
+		execl(MPG_123, "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execl(LOCAL_MPG_123, "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+		execlp("mpg123", "mpg123", "-q", "-s", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+	}
+#endif
 	ast_log(LOG_WARNING, "Execute of mpg123 failed\n");
 	_exit(0);
 }
@@ -369,7 +414,7 @@ static int mp3_exec(struct ast_channel *chan, void *data)
 	close(fds[0]);
 	
 	if (pid > -1)
-		kill(pid, SIGKILL);
+		killpg(pid, SIGKILL);
 	if (!res && owriteformat)
 		ast_set_write_format(chan, owriteformat);
 
