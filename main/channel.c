@@ -1595,7 +1595,11 @@ int ast_hangup(struct ast_channel *chan)
 	}
 			
 	ast_channel_unlock(chan);
+#ifdef	USER_EVENT_FILTER
+	manager_event(EVENT_FLAG_USER, "Hangup",
+#else
 	manager_event(EVENT_FLAG_CALL, "Hangup",
+#endif
 			"Channel: %s\r\n"
 			"Uniqueid: %s\r\n"
 			"Cause: %d\r\n"

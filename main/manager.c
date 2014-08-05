@@ -2578,6 +2578,12 @@ int manager_event(int category, const char *event, const char *fmt, ...)
 	struct timeval now;
 	struct ast_dynamic_str *buf;
 
+#ifdef	USER_EVENT_FILTER
+	// Only user events
+	if (category != EVENT_FLAG_USER)
+		return 0;
+#endif
+
 	/* Abort if there aren't any manager sessions */
 	if (!num_sessions)
 		return 0;
