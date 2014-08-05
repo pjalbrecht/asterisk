@@ -167,13 +167,13 @@ static int mp3play(char *filename, int fd)
 	}
 #endif
 	/* Execute mpg123, but buffer if it's a net connection */
-	if (!strncasecmp(filename, "http://", 7)) {
+	if (!strncasecmp(filename, "http://", 7) || !strncasecmp(filename, "-@http://", 9)) {
 		/* Most commonly installed in /usr/local/bin */
-	    execl(LOCAL_MPG_123, "mpg123", "-q", "-s", "-b", "1024", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+	    execl(LOCAL_MPG_123, "mpg123", "-q", "-s", "-b", "128", "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
 		/* But many places has it in /usr/bin */
-	    execl(MPG_123, "mpg123", "-q", "-s", "-b", "1024","-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+	    execl(MPG_123, "mpg123", "-q", "-s", "-b", "128","-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
 		/* As a last-ditch effort, try to use PATH */
-	    execlp("mpg123", "mpg123", "-q", "-s", "-b", "1024",  "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
+	    execlp("mpg123", "mpg123", "-q", "-s", "-b", "128",  "-f", "8192", "--mono", "-r", "8000", filename, (char *)NULL);
 	}
 	else {
 		/* Most commonly installed in /usr/local/bin */
@@ -306,8 +306,8 @@ static int mp3_exec(struct ast_channel *chan, void *data)
 	close(fds[1]);
 #endif
 
-	if (!strncasecmp((char *)data, "http://", 7)) {
-		timeout = 10000;
+	if (!strncasecmp((char *)data, "http://", 7) || !strncasecmp((char *)data, "-@http://", 9)) {
+		timeout = 40000;
 	}
 	/* Wait 1000 ms first */
 	next = ast_tvnow();
