@@ -46,7 +46,11 @@
 #if !defined(LOW_MEMORY)
 
 #if !defined(AST_API_MODULE)
+#if defined(__GNUC_STDC_INLINE__)
+#define AST_INLINE_API(hdr, body) static hdr; static inline hdr body
+#else
 #define AST_INLINE_API(hdr, body) hdr; extern inline hdr body
+#endif
 #else
 #define AST_INLINE_API(hdr, body) hdr; hdr body
 #endif
